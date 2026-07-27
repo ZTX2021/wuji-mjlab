@@ -321,6 +321,80 @@ class SoftplusGaussianDistribution(HeteroscedasticGaussianDistribution):
         self._distribution = Normal(mean, std)
 
 
+class ColoredNoiseGaussianDistribution(GaussianDistribution):
+    """Gaussian policy whose EXPLORATION noise is temporally CORRELATED (colored) rather than white.
+
+    The rollout action is ``a_t = mean + std * eps_t`` where ``eps_t`` is drawn from a per-env colored-noise
+    sequence with power spectrum ``S(f) ~ 1/f^beta`` (beta=0 white/uncorrelated, 0.5 recommended for PPO,
+    1.0 pink). Because each ``eps_t`` is normalized to be marginally UNIT-VARIANCE Gaussian, the per-step
+    policy remains exactly ``N(mean, std)``: log_prob / entropy / kl / params / deterministic_output are all
+    inherited from GaussianDistribution UNCHANGED, so the PPO objective is computed the ordinary way and
+    stays "asymptotically on-policy" ( Eberhard-style colored action noise for PPO, arXiv 2312.11091). The
+    ONLY thing colored is the cross-step correlation of the sampling.
+
+    Only ``sample()`` (the stochastic rollout path) is colored; deterministic evaluation (the mean) is
+    untouched, so paired baseline/deterministic eval is unaffected.
+
+    Noise is generated per-env in chunks of length ``horizon`` and advanced ONE step per ``sample()`` call.
+    ``sample()`` fires exactly once per env-step during rollout collection (the PPO update path uses
+    log_prob, not sample), so with the Clean structure's SYNCHRONOUS episodes (all envs reset together every
+    ``rl_steps``; pass ``horizon=rl_steps``) the chunk boundary coincides with the episode boundary and the
+    chunk-local index equals the per-env episode step. If that alignment were ever broken it would only
+    soften the correlation reset at episode edges — it can NOT bias the gradient, since the marginal is
+    always unit-variance Gaussian regardless of alignment.
+    """
+
+    def __init__(
+        self,
+        output_dim: int,
+        init_std: float = 1.0,
+        std_type: str = "scalar",
+        beta: float = 0.5,
+        horizon: int = 256,
+    ) -> None:
+        """Initialize the colored-noise Gaussian distribution.
+
+        Args:
+            output_dim: Dimension of the action/output space.
+            init_std: Initial standard deviation (same learnable std as GaussianDistribution).
+            std_type: Parameterization of the standard deviation: "scalar" or "log".
+            beta: Colored-noise exponent (S(f) ~ 1/f^beta). 0 = white, 0.5 = PPO default, 1 = pink.
+            horizon: Length of each per-env colored-noise chunk; pass rl_steps to align chunks to episodes.
+        """
+        super().__init__(output_dim, init_std=init_std, std_type=std_type)
+        self.beta = float(beta)
+        self.horizon = int(horizon)
+        self._noise: torch.Tensor | None = None  # (n_env, horizon, output_dim), lazily built on first sample()
+        self._t = 0
+
+    def _regenerate_noise(self, n_env: int, device: torch.device, dtype: torch.dtype) -> None:
+        """Draw fresh unit-variance colored-noise chunks for every env (Timmer & Koenig 1995, via rFFT)."""
+        T = self.horizon
+        freqs = torch.fft.rfftfreq(T, device=device)  # (T//2+1,), freqs[0] == 0 (DC)
+        scale = torch.zeros_like(freqs)
+        scale[1:] = freqs[1:] ** (-self.beta / 2.0)  # spectral amplitude ~ f^(-beta/2); DC set to 0 (zero mean)
+        # Independent complex Gaussian spectrum per (env, action_dim), colored by `scale`.
+        real = torch.randn(n_env, self.output_dim, freqs.numel(), device=device)
+        imag = torch.randn(n_env, self.output_dim, freqs.numel(), device=device)
+        spectrum = torch.complex(real, imag) * scale
+        x = torch.fft.irfft(spectrum, n=T, dim=-1)  # (n_env, output_dim, T) real colored sequence
+        # Normalize each sequence to EXACT unit empirical std so std*eps has the intended variance (log_prob-correct).
+        x = x / x.std(dim=-1, keepdim=True).clamp_min(1e-8)
+        self._noise = x.permute(0, 2, 1).to(dtype)  # (n_env, horizon, output_dim)
+        self._t = 0
+
+    def sample(self) -> torch.Tensor:
+        """Sample an action using colored (temporally correlated) exploration noise."""
+        mean = self._distribution.mean  # type: ignore
+        std = self._distribution.stddev  # type: ignore
+        n_env = mean.shape[0]
+        if self._noise is None or self._noise.shape[0] != n_env or self._t >= self.horizon:
+            self._regenerate_noise(n_env, mean.device, mean.dtype)
+        eps = self._noise[:, self._t, :]  # type: ignore  # (n_env, output_dim), marginally unit-variance Gaussian
+        self._t += 1
+        return mean + std * eps
+
+
 class _IdentityDeterministicOutput(nn.Module):
     """Exportable module that returns the MLP output as is."""
 

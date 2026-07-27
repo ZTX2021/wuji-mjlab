@@ -7,7 +7,7 @@
 
 from .cnn import CNN
 from .discriminator import Discriminator
-from .distribution import Distribution, GaussianDistribution, HeteroscedasticGaussianDistribution, SoftplusGaussianDistribution
+from .distribution import Distribution, GaussianDistribution, HeteroscedasticGaussianDistribution, SoftplusGaussianDistribution, ColoredNoiseGaussianDistribution
 from .mlp import MLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 from .rnn import RNN, HiddenState
@@ -23,5 +23,6 @@ __all__ = [
     "GaussianDistribution",
     "HeteroscedasticGaussianDistribution",
     "SoftplusGaussianDistribution",
+    "ColoredNoiseGaussianDistribution",
     "HiddenState",
 ]

@@ -12,6 +12,7 @@ pytest = ">=9.0"
 ruff = ">=0.6,<1"
 pre-commit = ">=3.6"
 libstdcxx-ng = ">=15.2.0,<16"
+setuptools = "<81"
 
 [pypi-options]
 index-strategy = "unsafe-best-match"
@@ -36,6 +37,7 @@ warp-lang = ">=1.12,<1.13"
 scipy = ">=1.15,<2"
 # pin <2: trimesh mesh.show() incompatible with pyglet 2.x (as of trimesh 4.12)
 pyglet = ">=1.5,<2"
+commlink = ">=0.4.2, <0.5"
 
 [tasks]
 train = { cmd = "python scripts/train/train_rsl_rl.py", description = "Train a task with rsl_rl (append --task and overrides)" }
